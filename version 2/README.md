@@ -32,6 +32,36 @@ conda install scipy numpy
 `tkinter` ships with standard Python and Anaconda distributions.  No other
 external dependencies are required.
 
+### Troubleshooting: If scipy fails to install
+
+If `pip install scipy` does not work on your system (common on older Windows
+setups or restricted environments), you can switch the ingest layer to use
+**h5py** instead.  Save your `.mat` files with the `-v7.3` flag (already
+shown in the MATLAB code below) and install h5py manually:
+
+1. Go to <https://www.lfd.uci.edu/~gohlke/pythonlibs/> — this is Christoph
+   Gohlke's unofficial Windows Python extension packages page, a
+   long-standing trusted resource for pre-built Python packages.
+2. Search for **h5py** on the page and download the `.whl` file that matches
+   your:
+   - **Python version** (e.g. `cp311` = Python 3.11)
+   - **Architecture** (`win_amd64` for 64-bit Windows)
+3. Install it from your Anaconda terminal:
+
+   ```bash
+   pip install path\to\downloaded\h5py-*.whl
+   ```
+
+4. Then install h5py's companion package if not already present:
+
+   ```bash
+   pip install numpy
+   ```
+
+Once h5py is installed, update the import in `indexer.py` to use h5py
+instead of `scipy.io.loadmat` (see the repository's git history for the
+original h5py-based implementation).
+
 ---
 
 ## How to Generate the .mat Files in MATLAB
