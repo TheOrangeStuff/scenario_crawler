@@ -1,7 +1,7 @@
 # MATLAB Profiler Trace Analyzer (Version 2)
 
 A Python desktop application using **tkinter** to analyze MATLAB profiler
-trace data exported as `.mat` files (v7.3 format). The tool indexes
+trace data exported as `.mat` files. The tool indexes
 `LOOPER_FN` occurrences across multiple profiler dump files, enables lazy
 loading of specific iteration ranges, and provides filtering, search, and
 codebase coverage analysis.
@@ -14,19 +14,19 @@ codebase coverage analysis.
 |------------|----------------------------------|
 | Python 3.9+| Runtime (Anaconda recommended)   |
 | tkinter    | Desktop GUI (bundled with Python)|
-| h5py       | Reading MATLAB v7.3 `.mat` files |
+| scipy      | Reading MATLAB `.mat` files      |
 | numpy      | Array handling                   |
 
 ### Install dependencies
 
 ```bash
-pip install h5py numpy
+pip install scipy numpy
 ```
 
 Or with Anaconda/Spyder:
 
 ```bash
-conda install h5py numpy
+conda install scipy numpy
 ```
 
 `tkinter` ships with standard Python and Anaconda distributions.  No other
