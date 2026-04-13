@@ -1,7 +1,7 @@
 # MATLAB Profiler Trace Analyzer (Version 2)
 
 A Python desktop application using **tkinter** to analyze MATLAB profiler
-trace data exported as `.mat` files (v7.3 format). The tool indexes
+trace data exported as `.mat` files. The tool indexes
 `LOOPER_FN` occurrences across multiple profiler dump files, enables lazy
 loading of specific iteration ranges, and provides filtering, search, and
 codebase coverage analysis.
@@ -14,23 +14,53 @@ codebase coverage analysis.
 |------------|----------------------------------|
 | Python 3.9+| Runtime (Anaconda recommended)   |
 | tkinter    | Desktop GUI (bundled with Python)|
-| h5py       | Reading MATLAB v7.3 `.mat` files |
+| scipy      | Reading MATLAB `.mat` files      |
 | numpy      | Array handling                   |
 
 ### Install dependencies
 
 ```bash
-pip install h5py numpy
+pip install scipy numpy
 ```
 
 Or with Anaconda/Spyder:
 
 ```bash
-conda install h5py numpy
+conda install scipy numpy
 ```
 
 `tkinter` ships with standard Python and Anaconda distributions.  No other
 external dependencies are required.
+
+### Troubleshooting: If scipy fails to install
+
+If `pip install scipy` does not work on your system (common on older Windows
+setups or restricted environments), you can switch the ingest layer to use
+**h5py** instead.  Save your `.mat` files with the `-v7.3` flag (already
+shown in the MATLAB code below) and install h5py manually:
+
+1. Go to <https://www.lfd.uci.edu/~gohlke/pythonlibs/> — this is Christoph
+   Gohlke's unofficial Windows Python extension packages page, a
+   long-standing trusted resource for pre-built Python packages.
+2. Search for **h5py** on the page and download the `.whl` file that matches
+   your:
+   - **Python version** (e.g. `cp311` = Python 3.11)
+   - **Architecture** (`win_amd64` for 64-bit Windows)
+3. Install it from your Anaconda terminal:
+
+   ```bash
+   pip install path\to\downloaded\h5py-*.whl
+   ```
+
+4. Then install h5py's companion package if not already present:
+
+   ```bash
+   pip install numpy
+   ```
+
+Once h5py is installed, update the import in `indexer.py` to use h5py
+instead of `scipy.io.loadmat` (see the repository's git history for the
+original h5py-based implementation).
 
 ---
 

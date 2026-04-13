@@ -1,7 +1,7 @@
 """Stage 1 - Ingest and Index Building.
 
-Scans a directory of zero-padded MATLAB profiler .mat files (v7.3 format),
-parses FunctionHistory and FunctionTable from each, locates every occurrence
+Scans a directory of zero-padded MATLAB profiler .mat files, parses
+FunctionHistory and FunctionTable from each, locates every occurrence
 of LOOPER_FN, and writes a JSON index mapping each occurrence to its source
 file and event position.
 """
@@ -10,96 +10,132 @@ import glob
 import json
 import os
 
-import h5py
 import numpy as np
+import scipy.io as sio
 
 
 LOOPER_FN = "LOOPER_FN"
 INDEX_FILENAME = "looper_fn_index.json"
 
 
-def _read_matlab_string(h5_ref, f):
-    """Dereference an HDF5 object reference to extract a MATLAB string."""
-    try:
-        deref = f[h5_ref]
-        raw = deref[()]
-        if isinstance(raw, bytes):
-            return raw.decode("utf-8", errors="replace")
-        if isinstance(raw, np.ndarray):
-            raw = raw.flatten()
-            if raw.dtype.kind in ("U", "S", "O"):
-                return "".join(chr(int(c)) for c in raw if int(c) != 0)
-            if np.issubdtype(raw.dtype, np.integer) or np.issubdtype(raw.dtype, np.floating):
-                return "".join(chr(int(c)) for c in raw if int(c) != 0)
-        return str(raw)
-    except Exception:
-        return ""
+# ---------------------------------------------------------------------------
+# Numpy / scipy.io unwrapping helpers
+# ---------------------------------------------------------------------------
 
+def _unwrap_scalar(val):
+    """Peel nested numpy wrappers until we reach a plain Python object.
 
-def _parse_function_table(f, p_group):
-    """Parse the FunctionTable from an HDF5 group representing the 'p' struct.
-
-    Returns a list of dicts with keys 'FunctionName' and 'FileName'.
+    scipy.io.loadmat frequently returns values wrapped in one or more layers
+    of numpy arrays, e.g. array([[array(['name'], dtype='<U4')]], dtype=object).
+    This function drills through all of them transparently.
     """
-    ft_ref = p_group["FunctionTable"]
-    ft_group = f[ft_ref[0, 0]] if ft_ref.shape else f[ft_ref[()]]
+    while isinstance(val, np.ndarray):
+        if val.size == 0:
+            return ""
+        if val.size == 1:
+            val = val.flat[0]
+        else:
+            break
+    if isinstance(val, (bytes, np.bytes_)):
+        return val.decode("utf-8", errors="replace")
+    if isinstance(val, np.str_):
+        return str(val)
+    return val
 
-    name_dataset = ft_group["FunctionName"]
-    file_dataset = ft_group["FileName"]
 
-    n_funcs = name_dataset.shape[1] if len(name_dataset.shape) > 1 else name_dataset.shape[0]
+def _get_field(struct_item, field_name, default=""):
+    """Extract a named field from a scipy struct record (numpy.void)."""
+    try:
+        if isinstance(struct_item, np.void) and field_name in struct_item.dtype.names:
+            return _unwrap_scalar(struct_item[field_name])
+        if hasattr(struct_item, field_name):
+            return _unwrap_scalar(getattr(struct_item, field_name))
+        if isinstance(struct_item, dict) and field_name in struct_item:
+            return _unwrap_scalar(struct_item[field_name])
+    except (KeyError, IndexError, TypeError):
+        pass
+    return default
+
+
+def _extract_p_struct(data):
+    """Locate the profile-info struct inside the dict returned by loadmat.
+
+    The MATLAB code saves ``p = profile('info')`` so the top-level key is
+    ``'p'``.  After loadmat with ``squeeze_me=True`` this may be a
+    ``numpy.void`` (the record itself) or still wrapped in one or two
+    array dimensions — we normalise all variants here.
+    """
+    if "p" not in data:
+        available = [k for k in data if not k.startswith("__")]
+        raise KeyError(
+            f"Variable 'p' not found in .mat file. "
+            f"Available keys: {available}"
+        )
+    p = data["p"]
+    # Strip surrounding array dimensions: (1,1) struct → scalar void
+    while isinstance(p, np.ndarray) and p.dtype.names and p.size == 1:
+        p = p.flat[0]
+    return p
+
+
+def _build_function_table(p_struct):
+    """Convert the FunctionTable inside *p_struct* to a list of plain dicts.
+
+    Each dict has keys ``'FunctionName'`` and ``'FileName'`` (Python str).
+    """
+    raw = _get_field(p_struct, "FunctionTable")
+
+    # raw may be a structured array (N,) of records, or a single void record
+    if isinstance(raw, np.void):
+        return [{
+            "FunctionName": str(_get_field(raw, "FunctionName", "")),
+            "FileName":     str(_get_field(raw, "FileName", "")),
+        }]
+
+    if isinstance(raw, np.ndarray):
+        items = raw.flatten()
+    else:
+        items = [raw]
 
     table = []
-    for i in range(n_funcs):
-        if len(name_dataset.shape) > 1:
-            name_ref = name_dataset[0, i]
-            file_ref = file_dataset[0, i]
-        else:
-            name_ref = name_dataset[i]
-            file_ref = file_dataset[i]
-
-        func_name = _read_matlab_string(name_ref, f)
-        file_name = _read_matlab_string(file_ref, f)
-        table.append({"FunctionName": func_name, "FileName": file_name})
-
+    for item in items:
+        table.append({
+            "FunctionName": str(_get_field(item, "FunctionName", "")),
+            "FileName":     str(_get_field(item, "FileName", "")),
+        })
     return table
 
 
-def _parse_function_history(f, p_group):
-    """Parse the FunctionHistory 2xN matrix from an HDF5 group.
+def _build_function_history(p_struct):
+    """Extract FunctionHistory from *p_struct* as a (2, N) int64 array.
 
-    Returns a numpy array of shape (2, N) where:
-      Row 0 = event type (0=CALL, 1=RETURN)
-      Row 1 = 1-based index into FunctionTable
+    Row 0 = event type (0 = CALL, 1 = RETURN).
+    Row 1 = 1-based index into FunctionTable.
     """
-    fh_ref = p_group["FunctionHistory"]
-    fh_data = fh_ref[()]
+    raw = _get_field(p_struct, "FunctionHistory")
+    fh = np.atleast_2d(np.asarray(raw, dtype=np.int64))
 
-    if isinstance(fh_data, np.ndarray) and fh_data.ndim == 2:
-        # HDF5/MATLAB stores column-major; h5py reads it transposed relative
-        # to MATLAB convention.  MATLAB's 2xN becomes Nx2 or 2xN in h5py
-        # depending on the version.  Normalise to 2xN.
-        if fh_data.shape[0] == 2:
-            return fh_data.astype(np.int64)
-        if fh_data.shape[1] == 2:
-            return fh_data.T.astype(np.int64)
+    # Normalise to shape (2, N) regardless of how scipy oriented it
+    if fh.ndim == 2:
+        if fh.shape[0] == 2:
+            return fh
+        if fh.shape[1] == 2:
+            return fh.T
 
-    raise ValueError("FunctionHistory has unexpected shape: " + str(fh_data.shape))
+    raise ValueError("FunctionHistory has unexpected shape: " + str(fh.shape))
 
 
 def parse_mat_file(filepath):
-    """Parse a single v7.3 .mat file.
+    """Parse a single .mat file via scipy.io.loadmat.
 
-    Returns (function_table, function_history) where function_history is 2xN.
+    Returns (function_table, function_history) where:
+      function_table  – list[dict] with 'FunctionName' / 'FileName' strings
+      function_history – numpy int64 array of shape (2, N)
     """
-    with h5py.File(filepath, "r") as f:
-        # The variable saved as 'p' contains the profile('info') struct
-        if "p" not in f:
-            raise KeyError(f"Variable 'p' not found in {filepath}. "
-                           f"Available keys: {list(f.keys())}")
-        p_group = f["p"]
-        func_table = _parse_function_table(f, p_group)
-        func_history = _parse_function_history(f, p_group)
+    data = sio.loadmat(str(filepath), squeeze_me=True, struct_as_record=True)
+    p_struct = _extract_p_struct(data)
+    func_table = _build_function_table(p_struct)
+    func_history = _build_function_history(p_struct)
     return func_table, func_history
 
 
